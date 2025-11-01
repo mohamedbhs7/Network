@@ -1,0 +1,17 @@
+{
+    "questions":
+        [
+            {
+                "question": "What is the capital of France?",
+                "options": "a)Rome | b)Paris | c)London | d)Berlin",
+                "correct_answer": "b",
+                "id": "1"
+            },
+            {
+                "question": "What is the capital of England?",
+                "options": "a)Rome | b)Paris | c)London | d)Berlin",
+                "correct_answer": "c",
+                "id": "2"
+            }
+        ]
+}
