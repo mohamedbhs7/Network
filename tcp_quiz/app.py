@@ -1,100 +1,108 @@
+# app.py
+"""
+Streamlit UI for the quiz. Uses tcp_client module for networking.
+- Call 'Join Server' (sidebar) to start the local tcp_client (persistent).
+- The UI polls tcp_client.get_state() each rerun and renders the present state.
+- When answering, the UI calls tcp_client.send_answer(answer).
+"""
+
 import streamlit as st
-import socket
 import time
+import client  # our module above
 
-# ----------------------- Server Configuration -----------------------
-HOST = "192.168.54.220"   # IP of TCP server
-PORT = 8888               # Port server listens on
+st.set_page_config(page_title="QuizNet (TCP)", layout="centered")
+st.title("🎮 QuizNet (UI)")
 
-# ----------------------- Initialize session state variables -----------------------
-for key in ["client", "question", "options", "score", "game_over", "messages", "game_started"]:
-    if key not in st.session_state:
-        if key == "client":
-            st.session_state[key] = None
-        elif key == "messages":
-            st.session_state[key] = []
-        elif key == "score":
-            st.session_state[key] = 0
-        elif key == "game_over":
-            st.session_state[key] = False
-        elif key == "game_started":
-            st.session_state[key] = False          # ✅ New state
+# Sidebar controls
+st.sidebar.header("Connection")
+username = st.sidebar.text_input("Username", value=client.get_state().get("username", ""))
+if st.sidebar.button("Join Server"):
+    if not username.strip():
+        st.sidebar.error("Please enter a username.")
+    else:
+        ok = client.start_client(username.strip())
+        if ok:
+            st.sidebar.success(f"Connected as {username.strip()}")
         else:
-            st.session_state[key] = ""
+            st.sidebar.error("Failed to connect to server. Check server is running.")
 
-# ----------------------- App Title -----------------------
-st.title("🎮 QuizNet Kahoot Game")
+if st.sidebar.button("Disconnect"):
+    client.stop_client()
+    st.rerun()
 
-# ----------------------- Connect to the Server -----------------------
-if not st.session_state.client:
-    username = st.text_input("Enter your username:")
-    if st.button("Join Server") and username:
-        try:
-            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client.settimeout(0.1)
-            client.connect((HOST, PORT))
-            client.sendall(f"join:{username}".encode())
-            st.session_state.client = client
-            st.success(f"✅ Connected to server as {username}")
-        except Exception as e:
-            st.error(f"❌ Connection failed: {e}")
+# Get snapshot state from tcp_client
+state = client.get_state()
 
-# ----------------------- Receive Data from Server -----------------------
-if st.session_state.client and not st.session_state.game_over:
-    client = st.session_state.client
-    try:
-        while True:
-            try:
-                data = client.recv(1024).decode()
-            except socket.timeout:
-                break
-
-            if not data:
-                break
-
-            # ✅ Host started the game
-            if data.startswith("start_game"):
-                st.session_state.game_started = True
-
-            elif data.startswith("question:") and st.session_state.game_started:
-                qdata = data.replace("question:", "")
-                q, opts = qdata.split("|", 1)
-                st.session_state.question = q
-                st.session_state.options = opts.split("|")
-
-            elif data.startswith("score:"):
-                st.session_state.score = int(data.replace("score:", ""))
-
-            elif data.startswith("quiz_over:"):
-                st.session_state.game_over = True
-                st.session_state.messages.append(data.replace("quiz_over:", ""))
-
-    except:
-        st.warning("⚠ Connection lost or server not responding.")
-
-# ----------------------- Display Before Game Starts -----------------------
-if not st.session_state.game_started:
-    st.warning("⏳ Waiting for the host to start the quiz...")
+# Show connection status
+if not state["connected"]:
+    st.warning("🔌 Not connected. Join the server from the sidebar.")
+    if state["messages"]:
+        st.subheader("Recent messages")
+        for m in state["messages"][-10:]:
+            st.write(m)
+    # refresh slowly so user can click join
+    time.sleep(1)
+    st.rerun()
 else:
-    # ----------------------- Display Question and Options -----------------------
-    if st.session_state.question and st.session_state.options:
-        st.info(f"❓ **{st.session_state.question}**")
-        cols = st.columns(len(st.session_state.options))
-        for i, opt in enumerate(st.session_state.options):
+    st.sidebar.write(f"👤 You: **{state['username']}**")
+    st.sidebar.write(f"🎯 Score: **{state['score']}**")
+    st.sidebar.markdown("---")
+
+# Show messages
+if state["messages"]:
+    st.subheader("Messages")
+    for msg in state["messages"][-5:]:
+        st.write(msg)
+
+# Waiting for host
+if not state["game_started"] and not state["game_over"]:
+    st.info("⏳ Waiting for host to start the quiz...")
+    # lightweight refresh loop while waiting
+    time.sleep(1.5)
+    st.rerun()
+
+# Game active
+if state["game_started"] and not state["game_over"]:
+    st.subheader("❓ Question")
+    st.write(f"**{state['question']}**")
+    opts = state["options"] or []
+    if not opts:
+        st.write("_No options available yet._")
+    else:
+        cols = st.columns(len(opts))
+        for i, opt in enumerate(opts):
             if cols[i].button(opt):
-                try:
-                    st.session_state.client.sendall(opt.encode())
-                    st.success(f"✅ Answer '{opt}' sent!")
-                    st.session_state.question = ""
-                    st.session_state.options = []
-                except:
-                    st.error("❌ Failed to send answer.")
+                # send answer via tcp_client
+                ok = client.send_answer(opt)
+                if not ok:
+                    st.error("Failed to send answer (not connected).")
+                else:
+                    st.success(f"Sent answer: {opt}")
+    if state["feedback"]:
+        st.info(state["feedback"])
 
-# ----------------------- Display Score and End Messages -----------------------
-st.write(f"🏆 **Current Score:** {st.session_state.score}")
-for msg in st.session_state.messages:
-    st.success(msg)
+# Live leaderboard (main area)
+if state["leaderboard"]:
+    st.subheader("🏅 Live Leaderboard")
+    sorted_lb = sorted(state["leaderboard"].items(), key=lambda x: x[1], reverse=True)
+    for user, pts in sorted_lb:
+        if user == state["username"]:
+            st.markdown(f"**{user}: {pts} pts**")
+        else:
+            st.write(f"{user}: {pts} pts")
 
-# ----------------------- Auto Refresh Every 2 Seconds -----------------------
-time.sleep(2)
+# Game over screen
+if state["game_over"]:
+    st.success("🏁 Quiz Over")
+    st.subheader("🏆 Final Leaderboard")
+    sorted_lb = sorted(state["leaderboard"].items(), key=lambda x: x[1], reverse=True)
+    for user, pts in sorted_lb:
+        st.write(f"{user}: {pts} pts")
+    if state["messages"]:
+        st.write("---")
+        for m in state["messages"]:
+            st.write(m)
+
+# Small auto-refresh so UI updates as tcp_client updates state
+time.sleep(1.0)
 st.rerun()
